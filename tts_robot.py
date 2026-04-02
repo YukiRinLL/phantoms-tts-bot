@@ -12,7 +12,11 @@ import os
 # 配置文件
 # ==========================
 CONFIG_FILE = "tts_config.json"
-config = {"voice": 0, "rate": 10, "volume": 1.0}
+config = {
+    "voice": 0,
+    "rate": 10,
+    "volume": 1.0
+}
 
 try:
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -38,33 +42,47 @@ def load_voices():
 load_voices()
 
 # ==========================
-# 全局播报控制（严格逐条）
+# 全局播报控制
 # ==========================
 speak_queue = []
 is_speaking = False
 message_ids = set()
 
+# ==========================
+# ✅ 播报函数（实时读取最新音量、语速）
+# ==========================
 def speak_sync(text):
     try:
         text = text.replace("'", "").replace('"', "")[:300]
+
+        # 实时读取滑块当前值 → 立刻生效
         rate = config["rate"] - 10
         vol = int(config["volume"] * 100)
-        voice = voices[config["voice"]] if voices else "Microsoft Huihui Desktop"
+        voice_name = voices[config["voice"]] if (voices and config["voice"] < len(voices)) else "Microsoft Huihui Desktop"
 
-        cmd = f"Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = {rate}; $s.Volume = {vol}; $s.SelectVoice('{voice}'); $s.Speak('{text}');"
+        cmd = (
+            f"Add-Type -AssemblyName System.Speech; "
+            f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Rate = {rate}; "
+            f"$s.Volume = {vol}; "
+            f"$s.SelectVoice('{voice_name}'); "
+            f"$s.Speak('{text}');"
+        )
         subprocess.run(
             ["powershell", "-Command", cmd],
             creationflags=0x08000000,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-    except:
-        pass
+    except Exception as e:
+        print("播报错误：", e)
 
+# ==========================
+# 顺序播报队列
+# ==========================
 def play_next():
     global is_speaking
     if not speak_queue:
-        log("播报队列为空，等待新消息...")
         is_speaking = False
         return
 
@@ -76,7 +94,7 @@ def play_next():
     def _run():
         global is_speaking
         speak_sync(content)
-        time.sleep(0.3)
+        time.sleep(0.2)
         is_speaking = False
         play_next()
 
@@ -86,19 +104,18 @@ def add_play(nickname, text, read_name):
     if not text:
         return
     content = f"{nickname}说：{text}" if read_name else text
-    log(f"添加到播报队列：{nickname}：{text[:30]}...")
     speak_queue.append({"content": content})
     if not is_speaking:
         play_next()
 
 # ==========================
-# 跳过功能
+# 跳过播报（正常可用）
 # ==========================
 def skip_play():
     global is_speaking
     is_speaking = False
     speak_queue.clear()
-    log("===== 已跳过当前播报，队列已清空 =====")
+    log("===== 已跳过播报并清空队列 =====")
 
 # ==========================
 # 详细日志
@@ -120,24 +137,23 @@ class TTSApp:
         self.root.title("Phantoms群消息TTS自动播报 v1.0.0.beta")
         self.root.geometry("960x780")
 
-        # ========== 加载图标 ==========
+        # 图标
         try:
             icon_path = os.path.join(os.path.dirname(__file__), "icon.jpg")
             if os.path.exists(icon_path):
                 self.root.iconphoto(False, tk.PhotoImage(file=icon_path))
-        except Exception as e:
-            log(f"图标加载失败: {e}")
+        except:
+            pass
 
         self.root.rowconfigure(1, weight=1)
         self.root.columnconfigure(0, weight=1)
-
         self.API_URL = "https://phantoms-backend.onrender.com/onebot/latest?limit=30"
         self.read_name_var = tk.BooleanVar(value=True)
 
         self.create_top()
         self.create_list()
         self.create_log()
-        log("程序启动成功，开始加载消息...")
+        log("程序启动成功")
         self.start_fetch()
 
     # ==========================
@@ -151,28 +167,40 @@ class TTSApp:
         ttk.Button(top, text="跳过播报", command=skip_play).grid(row=0, column=0, padx=5)
         ttk.Checkbutton(top, text="播报用户名", variable=self.read_name_var).grid(row=0, column=1, padx=5)
 
+        # 音色
         ttk.Label(top, text="音色：").grid(row=0, column=2, padx=2)
         voice_var = tk.StringVar(value=voices[config["voice"]] if voices else "微软语音")
         voice_box = ttk.Combobox(top, textvariable=voice_var, values=voices, state="readonly", width=22)
         voice_box.grid(row=0, column=3, padx=5)
         voice_box.bind("<<ComboboxSelected>>", self.save_config)
 
+        # 语速
         ttk.Label(top, text="语速：").grid(row=0, column=4, padx=2)
         rate_var = tk.IntVar(value=config["rate"])
-        ttk.Scale(top, from_=-10, to=20, variable=rate_var).grid(row=0, column=5, padx=5)
+        rate_scale = ttk.Scale(top, from_=-10, to=20, variable=rate_var)
+        rate_scale.grid(row=0, column=5, padx=5)
+        rate_scale.bind("<ButtonRelease-1>", self.save_config)
 
+        # 音量
         ttk.Label(top, text="音量：").grid(row=0, column=6, padx=2)
         vol_var = tk.DoubleVar(value=config["volume"])
-        ttk.Scale(top, from_=0.0, to=1.0, variable=vol_var).grid(row=0, column=7, padx=5)
+        vol_scale = ttk.Scale(top, from_=0.0, to=1.0, variable=vol_var)
+        vol_scale.grid(row=0, column=7, padx=5)
+        vol_scale.bind("<ButtonRelease-1>", self.save_config)
 
-    def save_config(self, *args):
+    # ==========================
+    # 保存配置（滑块松开后保存）
+    # ==========================
+    def save_config(self, event=None):
         try:
             config["voice"] = voices.index(voice_var.get())
             config["rate"] = rate_var.get()
             config["volume"] = vol_var.get()
+
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
-            log("已保存配置：音色/语速/音量")
+
+            log(f"配置已更新 → 语速:{config['rate']} 音量:{config['volume']:.2f}")
         except:
             pass
 
@@ -221,13 +249,13 @@ class TTSApp:
     # 增量拉取
     # ==========================
     def fetch(self):
-        log("开始拉取最新消息列表...")
+        log("开始拉取消息...")
         try:
             data = requests.get(self.API_URL, timeout=10).json()
             items = list(reversed(data))
-            log(f"拉取完成，共 {len(items)} 条消息")
-        except Exception as e:
-            log(f"拉取失败：{str(e)}")
+            log(f"拉取完成，共 {len(items)} 条")
+        except:
+            log("拉取消息失败")
             return
 
         new_count = 0
@@ -242,7 +270,7 @@ class TTSApp:
 
             message_ids.add(mid)
             nickname = item.get("nickname", "用户")
-            log(f"发现新消息 ID={mid}：{nickname}：{text[:40]}...")
+            log(f"新消息：{nickname}：{text[:40]}...")
 
             row = Frame(self.box, padx=6, pady=5)
             row.pack(fill="x", pady=1)
@@ -253,7 +281,7 @@ class TTSApp:
             new_count += 1
 
         if new_count > 0:
-            log(f"本次新增 {new_count} 条消息，已全部加入播报队列")
+            log(f"本次新增 {new_count} 条消息")
         else:
             log("暂无新消息")
 
@@ -262,8 +290,8 @@ class TTSApp:
             while True:
                 try:
                     self.fetch()
-                except Exception as e:
-                    log(f"循环错误：{str(e)}")
+                except:
+                    pass
                 time.sleep(5)
         threading.Thread(target=loop, daemon=True).start()
 
