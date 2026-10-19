@@ -15,7 +15,8 @@ CONFIG_FILE = "tts_config.json"
 config = {
     "voice": 0,
     "rate": 10,
-    "volume": 1.0
+    "volume": 1.0,
+    "name_mode": "full"
 }
 
 try:
@@ -100,13 +101,111 @@ def play_next():
 
     threading.Thread(target=_run, daemon=True).start()
 
-def add_play(nickname, text, read_name):
+def smart_name(nickname):
+    """Keep the likely name while removing common QQ nickname decorations."""
+    name = re.sub(r"[\s\u200b\u200c\u200d\ufeff]+", "", str(nickname or "用户"))
+
+    # QQ nicknames commonly use these paired marks for a clan, role, status,
+    # platform tag, or fan-group label before/after the actual name.
+    bracket_pairs = (
+        ("【", "】"), ("［", "］"), ("[", "]"), ("（", "）"), ("(", ")"),
+        ("{", "}"), ("｛", "｝"), ("<", ">"), ("《", "》"), ("〈", "〉"),
+        ("「", "」"), ("『", "』"), ("〔", "〕"), ("〖", "〗"),
+        ("〘", "〙"), ("〚", "〛"), ("﹙", "﹚"),
+    )
+    changed = True
+    while changed and name:
+        changed = False
+        for left, right in bracket_pairs:
+            prefix = re.match(re.escape(left) + r".*?" + re.escape(right), name)
+            if prefix:
+                name = name[prefix.end():]
+                changed = True
+
+            suffix = re.search(re.escape(left) + r".*?" + re.escape(right) + r"$", name)
+            if suffix:
+                name = name[:suffix.start()]
+                changed = True
+
+    # Split only on separators normally used between a name and a tag. Keep
+    # underscores out because they are common in genuine English usernames.
+    separators = r"[-·•‧・･/／\\|｜¦丨—–~～=＝:：,，、]+"
+    parts = [part for part in re.split(separators, name) if part]
+
+    # Strip unpaired decoration frequently used around QQ display names.
+    edge_marks = r"★☆✦✧✩✪✫✬✭✮✯✰♡♥❤ღ❀✿❁❃☀☾☽♔♕♛♚⚡☯※◆◇■□●○◎▲△▼▽→←➤➜➳➵➸➹➷➶" \
+        r"`~!！@#$%^&*＊+=|｜:：;；,，。．…·•"
+    name = re.sub(r"^[" + edge_marks + r"]+|[" + edge_marks + r"]+$", "", name)
+    parts = [re.sub(r"^[" + edge_marks + r"]+|[" + edge_marks + r"]+$", "", part) for part in parts]
+    parts = [part for part in parts if part]
+
+    common_tags = re.compile(
+        r"(?:官方|认证|認證|客服|管理员|管理員|群主|房主|站长|站長|频道|頻道|工作室|团队|團隊|"
+        r"备用|備用|小号|小號|主号|主號|马甲|馬甲|本尊|本人|粉丝|粉絲|后援|後援|应援|應援|"
+        r"搬运|搬運|同人|游戏|遊戲|电竞|電競|直播|主播|店铺|店鋪|店主|合作|商务|商務|"
+        r"bot|robot|admin|mod|vip|official|live|fan|fans|team|studio|club|tv|频道主)",
+        re.IGNORECASE,
+    )
+
+    def is_decoration(part):
+        if common_tags.search(part):
+            return True
+        if re.fullmatch(r"[A-Za-z0-9+_.]+", part) and any(re.search(r"[\u3400-\u9fff]", p) for p in parts):
+            return True
+        # Short Chinese edge labels such as “小号”“工作号” are frequent tags.
+        if re.search(r"(?:号|號|版|站|组|組|团|團|部|区|區|服|台|社)$", part) and len(part) <= 4:
+            return True
+        return False
+
+    while len(parts) > 1:
+        first_tag = is_decoration(parts[0])
+        last_tag = is_decoration(parts[-1])
+        if first_tag and not last_tag:
+            parts.pop(0)
+        elif last_tag and not first_tag:
+            parts.pop()
+        elif first_tag and last_tag:
+            parts.pop(0)
+            if len(parts) > 1:
+                parts.pop()
+        else:
+            # For two Chinese fragments, a suffix is more often a role/tag;
+            # retain the first fragment (e.g. “小明-后援会”).
+            if len(parts) == 2 and all(re.search(r"[\u3400-\u9fff]", p) for p in parts):
+                parts.pop()
+            else:
+                break
+
+    name = parts[0] if parts else name
+    return name or "用户"
+
+
+def add_play(nickname, text, name_mode):
     if not text:
         return
-    content = f"{nickname}说：{text}" if read_name else text
+    content = build_speech(nickname, text, name_mode)
     speak_queue.append({"content": content})
     if not is_speaking:
         play_next()
+
+
+def get_name_mode(display_name):
+    return {
+        "不播报用户名": "none",
+        "完整用户名": "full",
+        "智能裁剪": "smart",
+        "简称（前两个字）": "short",
+    }.get(display_name, "full")
+
+
+def build_speech(nickname, text, name_mode):
+    if name_mode == "none":
+        return text
+    if name_mode == "full":
+        return f"{nickname}说：{text}"
+    if name_mode == "smart":
+        return f"{smart_name(nickname)}，{text}"
+    return f"{str(nickname or '用户')[:2]}，{text}"
 
 # ==========================
 # 跳过播报（正常可用）
@@ -148,7 +247,16 @@ class TTSApp:
         self.root.rowconfigure(1, weight=1)
         self.root.columnconfigure(0, weight=1)
         self.API_URL = "https://phantoms-backend.onrender.com/onebot/latest?limit=30"
-        self.read_name_var = tk.BooleanVar(value=True)
+        name_mode = config.get("name_mode", "full")
+        if name_mode not in ("none", "full", "smart", "short"):
+            name_mode = "full"
+        name_mode_labels = {
+            "none": "不播报用户名",
+            "full": "完整用户名",
+            "smart": "智能裁剪",
+            "short": "简称（前两个字）",
+        }
+        self.name_mode_var = tk.StringVar(value=name_mode_labels[name_mode])
 
         self.create_top()
         self.create_list()
@@ -165,27 +273,36 @@ class TTSApp:
         top.grid(row=0, column=0, sticky="ew")
 
         ttk.Button(top, text="跳过播报", command=skip_play).grid(row=0, column=0, padx=5)
-        ttk.Checkbutton(top, text="播报用户名", variable=self.read_name_var).grid(row=0, column=1, padx=5)
+        ttk.Label(top, text="用户名：").grid(row=0, column=1, padx=2)
+        name_mode_box = ttk.Combobox(
+            top,
+            textvariable=self.name_mode_var,
+            values=("不播报用户名", "完整用户名", "智能裁剪", "简称（前两个字）"),
+            state="readonly",
+            width=12,
+        )
+        name_mode_box.grid(row=0, column=2, padx=5)
+        name_mode_box.bind("<<ComboboxSelected>>", self.save_config)
 
         # 音色
-        ttk.Label(top, text="音色：").grid(row=0, column=2, padx=2)
+        ttk.Label(top, text="音色：").grid(row=0, column=3, padx=2)
         voice_var = tk.StringVar(value=voices[config["voice"]] if voices else "微软语音")
         voice_box = ttk.Combobox(top, textvariable=voice_var, values=voices, state="readonly", width=22)
-        voice_box.grid(row=0, column=3, padx=5)
+        voice_box.grid(row=0, column=4, padx=5)
         voice_box.bind("<<ComboboxSelected>>", self.save_config)
 
         # 语速
-        ttk.Label(top, text="语速：").grid(row=0, column=4, padx=2)
+        ttk.Label(top, text="语速：").grid(row=0, column=5, padx=2)
         rate_var = tk.IntVar(value=config["rate"])
         rate_scale = ttk.Scale(top, from_=-10, to=20, variable=rate_var)
-        rate_scale.grid(row=0, column=5, padx=5)
+        rate_scale.grid(row=0, column=6, padx=5)
         rate_scale.bind("<ButtonRelease-1>", self.save_config)
 
         # 音量
-        ttk.Label(top, text="音量：").grid(row=0, column=6, padx=2)
+        ttk.Label(top, text="音量：").grid(row=0, column=7, padx=2)
         vol_var = tk.DoubleVar(value=config["volume"])
         vol_scale = ttk.Scale(top, from_=0.0, to=1.0, variable=vol_var)
-        vol_scale.grid(row=0, column=7, padx=5)
+        vol_scale.grid(row=0, column=8, padx=5)
         vol_scale.bind("<ButtonRelease-1>", self.save_config)
 
     # ==========================
@@ -193,9 +310,16 @@ class TTSApp:
     # ==========================
     def save_config(self, event=None):
         try:
-            config["voice"] = voices.index(voice_var.get())
+            if voice_var.get() in voices:
+                config["voice"] = voices.index(voice_var.get())
             config["rate"] = rate_var.get()
             config["volume"] = vol_var.get()
+            config["name_mode"] = {
+                "不播报用户名": "none",
+                "完整用户名": "full",
+                "智能裁剪": "smart",
+                "简称（前两个字）": "short",
+            }.get(self.name_mode_var.get(), self.name_mode_var.get())
 
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
@@ -275,9 +399,9 @@ class TTSApp:
             row = Frame(self.box, padx=6, pady=5)
             row.pack(fill="x", pady=1)
             ttk.Label(row, text=f"{nickname}：{text}", wraplength=820, anchor="w").pack(side="left", fill="x", expand=True)
-            ttk.Button(row, text="播放", command=lambda n=nickname, t=text: add_play(n, t, self.read_name_var.get())).pack(side="right", padx=4)
+            ttk.Button(row, text="播放", command=lambda n=nickname, t=text: add_play(n, t, get_name_mode(self.name_mode_var.get()))).pack(side="right", padx=4)
 
-            add_play(nickname, text, self.read_name_var.get())
+            add_play(nickname, text, get_name_mode(self.name_mode_var.get()))
             new_count += 1
 
         if new_count > 0:
