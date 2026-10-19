@@ -54,6 +54,9 @@ message_ids = set()
 # ==========================
 def speak_sync(text):
     try:
+        text = remove_links(text)
+        if not text:
+            return
         text = text.replace("'", "").replace('"', "")[:300]
 
         # 实时读取滑块当前值 → 立刻生效
@@ -77,6 +80,31 @@ def speak_sync(text):
         )
     except Exception as e:
         print("播报错误：", e)
+
+
+def remove_links(text):
+    """Remove URLs and surrounding link wrappers before text-to-speech."""
+    text = str(text or "")
+    if not text:
+        return ""
+
+    url_pattern = re.compile(
+        r"(?:https?://|ftp://|www\.)[A-Za-z0-9][A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*"
+        r"|(?<![@\w.-])(?:[\w-]+\.)+[A-Za-z]{2,24}"
+        r"(?::\d+)?(?:/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)?",
+        re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?:\[[^\]]*\]\([^)]*\)|【[^】]*】（[^）]*）|【[^】]*】\([^)]*\))",
+        " ",
+        text,
+    )
+    text = url_pattern.sub(" ", text)
+    text = re.sub(r"\[\s*\]|\(\s*\)|（\s*）|【\s*】", " ", text)
+    text = re.sub(r"(?:链接|連結|link|url)\s*[:：]?\s*", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+([,，。.!！?？;；:：、])", r"\1", text)
+    text = re.sub(r"[\s]+", " ", text).strip(" \t\r\n,，。.!！?？;；:：|/\\")
+    return text
 
 
 def detect_language(text):

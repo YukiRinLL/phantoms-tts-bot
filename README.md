@@ -22,6 +22,8 @@
 
 模式选择会自动保存到 `tts_config.json`。
 
+播报前会自动过滤 `http/https/ftp`、`www.`、常见域名、端口、查询参数、短链接以及 Markdown 链接，只播报链接以外的文字；如果消息只有链接，则不会播报。
+
 ## 🛠️ 环境依赖
 - Python 3.7 或更高版本
 - 依赖库见 `requirements.txt`
