@@ -16,7 +16,7 @@ config = {
     "voice": 0,
     "rate": 10,
     "volume": 1.0,
-    "name_mode": "full"
+    "name_mode": "smart"
 }
 
 try:
@@ -59,7 +59,7 @@ def speak_sync(text):
         # 实时读取滑块当前值 → 立刻生效
         rate = config["rate"] - 10
         vol = int(config["volume"] * 100)
-        voice_name = voices[config["voice"]] if (voices and config["voice"] < len(voices)) else "Microsoft Huihui Desktop"
+        voice_name = select_voice(text)
 
         cmd = (
             f"Add-Type -AssemblyName System.Speech; "
@@ -77,6 +77,38 @@ def speak_sync(text):
         )
     except Exception as e:
         print("播报错误：", e)
+
+
+def detect_language(text):
+    """Return Japanese, English, or None for language-specific voice fallback."""
+    text = re.sub(r"[\s\W_]+", "", str(text or ""), flags=re.UNICODE)
+    if not text:
+        return None
+    if re.fullmatch(r"[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fff]+", text):
+        # Japanese kana is a reliable signal; kanji-only text remains Chinese
+        # because the same characters are shared by both languages.
+        if re.search(r"[\u3040-\u30ff\u31f0-\u31ff]", text):
+            return "japanese"
+    if re.fullmatch(r"[A-Za-z]+", text):
+        return "english"
+    return None
+
+
+def select_voice(text):
+    """Use an installed Japanese/English voice when the text is unambiguous."""
+    selected = voices[config["voice"]] if (voices and 0 <= config["voice"] < len(voices)) else "Microsoft Huihui Desktop"
+    language = detect_language(text)
+    if language == "japanese":
+        keywords = ("japanese", "ja-jp", "haruka", "ayumi", "ichiro", "sayaka")
+    elif language == "english":
+        keywords = ("english", "en-us", "en-gb", "david", "zira", "mark", "susan", "george")
+    else:
+        return selected
+
+    for voice in voices:
+        if any(keyword in voice.lower() for keyword in keywords):
+            return voice
+    return selected
 
 # ==========================
 # 顺序播报队列
@@ -126,6 +158,13 @@ def smart_name(nickname):
             if suffix:
                 name = name[:suffix.start()]
                 changed = True
+
+    # Some nicknames contain an opening bracket without a closing bracket,
+    # especially when the suffix was truncated by the source platform.
+    for left, right in bracket_pairs:
+        unclosed_suffix = re.search(re.escape(left) + r"[^" + re.escape(right) + r"]*$", name)
+        if unclosed_suffix:
+            name = name[:unclosed_suffix.start()]
 
     # Split only on separators normally used between a name and a tag. Keep
     # underscores out because they are common in genuine English usernames.
